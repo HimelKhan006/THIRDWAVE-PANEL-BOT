@@ -1,0 +1,201 @@
+name: Third Wave Panel 24/7 Always-Online Bot Runner
+
+on:
+  push:
+    branches: [ main ]          # Auto-starts on every push to main
+  workflow_dispatch:
+    inputs:
+      is_handover:
+        description: 'Internal zero-restart handover flag (true/false)'
+        required: false
+        default: 'false'
+  schedule:
+    # Backup safety net — fires every 6h if self-trigger ever fails
+    - cron: '0 */6 * * *'
+
+# Only ONE bot instance ever runs. New run cancels the old one instantly.
+concurrency:
+  group: thirdwave-panel-bot-single-instance
+  cancel-in-progress: true
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  run-bot:
+    name: Run Third Wave Panel 24/7
+    runs-on: ubuntu-latest
+    # GitHub hard limit is 6h (360 min). We use 358 to leave a 2-min safety buffer.
+    timeout-minutes: 358
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Cancel Any Other Running Instances
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "🔍 Cancelling any other active runs..."
+          curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?status=in_progress&per_page=20" \
+            | python3 -c "
+          import sys, json
+          runs = json.load(sys.stdin).get('workflow_runs', [])
+          for r in runs:
+              if str(r['id']) != '${{ github.run_id }}':
+                  print(r['id'])
+          " | while read r_id; do
+            echo "  🛑 Cancelling old run #$r_id..."
+            curl -s -X POST -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/$r_id/cancel" || true
+          done
+          echo "✅ Cleanup done."
+
+      - name: Clear Old Completed Workflow History
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "🧹 Deleting old completed/cancelled workflow run history..."
+          curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?status=completed&per_page=20" \
+            | python3 -c "
+          import sys, json
+          runs = json.load(sys.stdin).get('workflow_runs', [])
+          for r in runs:
+              print(r['id'])
+          " | while read r_id; do
+            curl -s -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/$r_id" || true
+          done
+          echo "✅ History cleaned."
+
+      # Restore database from cache so allocated numbers are preserved across sessions
+      - name: Restore Persistent Database from Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: thirdwave_panel.db
+          key: panel-database-persistent
+          restore-keys: |
+            panel-database-
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-panel-v1
+          restore-keys: pip-panel-
+
+      - name: Install Dependencies
+        run: |
+          pip install --quiet --upgrade pip
+          pip install --quiet \
+            "python-telegram-bot>=21.0" \
+            "httpx>=0.27.0" \
+            "python-dotenv>=1.0.0"
+          echo "✅ Dependencies ready."
+
+      - name: Validate Required Secrets
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          THIRDWAVE_API_KEY: ${{ secrets.THIRDWAVE_API_KEY }}
+          ADMIN_USER_IDS: ${{ secrets.ADMIN_USER_IDS }}
+        run: |
+          echo "🔍 Checking required GitHub Secrets..."
+          MISSING=""
+          [ -z "$TELEGRAM_BOT_TOKEN" ] && MISSING="${MISSING}\n  - TELEGRAM_BOT_TOKEN"
+          [ -z "$THIRDWAVE_API_KEY" ]   && MISSING="${MISSING}\n  - THIRDWAVE_API_KEY"
+          [ -z "$ADMIN_USER_IDS" ]      && MISSING="${MISSING}\n  - ADMIN_USER_IDS"
+          if [ -n "$MISSING" ]; then
+            echo -e "❌ Missing required secrets:${MISSING}"
+            echo "Please configure these in Repository Settings -> Secrets and variables -> Actions"
+            exit 1
+          fi
+          if [ -f "thirdwave_panel.db" ]; then
+            echo "✅ Persistent database restored from cache."
+          else
+            echo "ℹ️ Fresh database initialized (will auto-create and cache)."
+          fi
+          echo "✅ All required secrets present!"
+
+      - name: Run Bot (Auto-Recovery & Continuous 24/7 Operation)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          THIRDWAVE_API_KEY: ${{ secrets.THIRDWAVE_API_KEY }}
+          THIRDWAVE_BASE_URL: ${{ secrets.THIRDWAVE_BASE_URL || 'https://clients.thirdwave.im' }}
+          ADMIN_USER_IDS: ${{ secrets.ADMIN_USER_IDS }}
+          DB_FILE: ${{ github.workspace }}/thirdwave_panel.db
+          SESSION_TIMEOUT: "19500"
+          PYTHONUNBUFFERED: "1"
+          PYTHONIOENCODING: "utf-8"
+        run: |
+          echo "========================================"
+          echo "  THIRDWAVE PANEL — Starting Up (24/7)"
+          echo "  Trigger  : ${{ github.event_name }}"
+          echo "  DB Path  : $DB_FILE"
+          echo "  Session  : 5h 25min (19500s) — GitHub limit: 6h"
+          echo "========================================"
+
+          # 19500s = 5h 25min. Leaves ~33 min for setup + cache save + self-trigger
+          END_TIME=$((SECONDS + 19500))
+
+          while true; do
+            REMAINING=$((END_TIME - SECONDS))
+
+            if [ $REMAINING -lt 90 ]; then
+              echo "⏱️ Session window ending. Exiting cleanly for save & self-trigger."
+              break
+            fi
+
+            echo "⚡ [$(date -u +'%Y-%m-%d %H:%M:%S UTC')] Starting bot.py... (${REMAINING}s remaining)"
+            python bot.py
+            EXIT_CODE=$?
+
+            if [ $EXIT_CODE -eq 0 ]; then
+              echo "✅ Clean session handover (exit 0)."
+              break
+            fi
+
+            if [ $EXIT_CODE -eq 1 ]; then
+              echo "❌ Config error. Halting."
+              exit 1
+            fi
+
+            echo "⚠️ [$(date -u +'%Y-%m-%d %H:%M:%S UTC')] Bot stopped (exit: $EXIT_CODE). Restarting in 3s..."
+            sleep 3
+          done
+
+          echo "⏱️ 5h 25min session complete. Saving database and self-triggering next run..."
+
+      # Save the database BEFORE runner is destroyed so next run restores it
+      - name: Save Database to Cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: thirdwave_panel.db
+          key: panel-database-persistent
+
+      - name: Self-Trigger Next Run (Zero Downtime Restart)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "🔄 Triggering next bot session immediately to avoid downtime..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/run_bot.yml/dispatches" \
+            -d '{"ref":"main","inputs":{"is_handover":"true"}}')
+
+          if [ "$HTTP_CODE" = "204" ]; then
+            echo "✅ Next run triggered! Bot continues without downtime."
+          else
+            echo "⚠️ Self-trigger returned HTTP $HTTP_CODE (cron will pick up as backup)."
+          fi
