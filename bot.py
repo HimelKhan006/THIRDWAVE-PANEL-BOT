@@ -306,75 +306,6 @@ def get_country_display(iso: str = "", dial_code: str = "", range_name: str = ""
     country_name = names.get(code, (code or "Global"))
     return flag, country_name
 
-# Cached website reference ranges (used if server returns 503 maintenance)
-WEBSITE_CACHED_RANGES: List[Dict[str, Any]] = [
-    {
-        "range_id": 101, "country_name": "Pakistan", "country_code": "PK", "dial_code": "92",
-        "range_name": "Pakistan Mobilink Jazz", "rate": "0.0120",
-        "supported_sender_ids": "WhatsApp, Google, Telegram, IMO, TikTok, Facebook, Uber", "total_numbers": 5000,
-    },
-    {
-        "range_id": 102, "country_name": "Pakistan", "country_code": "PK", "dial_code": "92",
-        "range_name": "Pakistan Telenor", "rate": "0.0115",
-        "supported_sender_ids": "WhatsApp, Telegram, Google, Discord, Steam", "total_numbers": 3500,
-    },
-    {
-        "range_id": 103, "country_name": "Pakistan", "country_code": "PK", "dial_code": "92",
-        "range_name": "Pakistan Zong", "rate": "0.0118",
-        "supported_sender_ids": "WhatsApp, Google, IMO, Telegram, TikTok", "total_numbers": 4200,
-    },
-    {
-        "range_id": 201, "country_name": "India", "country_code": "IN", "dial_code": "91",
-        "range_name": "India Airtel Delhi", "rate": "0.0095",
-        "supported_sender_ids": "WhatsApp, Google, Telegram, PayTM, PhonePe, Uber", "total_numbers": 12000,
-    },
-    {
-        "range_id": 202, "country_name": "India", "country_code": "IN", "dial_code": "91",
-        "range_name": "India Jio Mumbai", "rate": "0.0090",
-        "supported_sender_ids": "WhatsApp, Google, Telegram, PhonePe, Uber, TikTok", "total_numbers": 15000,
-    },
-    {
-        "range_id": 301, "country_name": "Bangladesh", "country_code": "BD", "dial_code": "880",
-        "range_name": "Bangladesh Grameenphone", "rate": "0.0135",
-        "supported_sender_ids": "WhatsApp, IMO, Telegram, Google, Facebook, bKash", "total_numbers": 4000,
-    },
-    {
-        "range_id": 302, "country_name": "Bangladesh", "country_code": "BD", "dial_code": "880",
-        "range_name": "Bangladesh Robi Axiata", "rate": "0.0130",
-        "supported_sender_ids": "WhatsApp, IMO, Telegram, Google, TikTok", "total_numbers": 3200,
-    },
-    {
-        "range_id": 401, "country_name": "Indonesia", "country_code": "ID", "dial_code": "62",
-        "range_name": "Indonesia Telkomsel", "rate": "0.0110",
-        "supported_sender_ids": "WhatsApp, Telegram, Google, TikTok, Shopee, Gojek", "total_numbers": 8500,
-    },
-    {
-        "range_id": 501, "country_name": "Philippines", "country_code": "PH", "dial_code": "63",
-        "range_name": "Philippines Globe", "rate": "0.0140",
-        "supported_sender_ids": "WhatsApp, Viber, Google, Telegram, GCash, Facebook", "total_numbers": 6000,
-    },
-    {
-        "range_id": 601, "country_name": "Nigeria", "country_code": "NG", "dial_code": "234",
-        "range_name": "Nigeria MTN", "rate": "0.0150",
-        "supported_sender_ids": "WhatsApp, Telegram, Google, Facebook, TikTok, OPay", "total_numbers": 7500,
-    },
-    {
-        "range_id": 701, "country_name": "Vietnam", "country_code": "VN", "dial_code": "84",
-        "range_name": "Vietnam Viettel", "rate": "0.0125",
-        "supported_sender_ids": "WhatsApp, Zalo, Telegram, Google, TikTok, Shopee", "total_numbers": 5500,
-    },
-    {
-        "range_id": 801, "country_name": "United States", "country_code": "US", "dial_code": "1",
-        "range_name": "USA T-Mobile Virtual", "rate": "0.0250",
-        "supported_sender_ids": "WhatsApp, Google, Telegram, Steam, Discord, Tinder", "total_numbers": 10000,
-    },
-    {
-        "range_id": 901, "country_name": "United Kingdom", "country_code": "GB", "dial_code": "44",
-        "range_name": "UK Vodafone Virtual", "rate": "0.0220",
-        "supported_sender_ids": "WhatsApp, Telegram, Google, Uber, PayPal", "total_numbers": 4500,
-    },
-]
-
 # ==========================================
 # 7. Thirdwave Panel Client (Strictly /access-list & /me)
 # ==========================================
@@ -689,46 +620,34 @@ async def query_and_display_access_list(update: Update, sender_id: str):
         # API returned 503 or error
         code = result.get("status_code", 0)
         msg  = result.get("message", "API Error")
+        raw_err = result.get("raw_error", "")
         latency = result.get("latency_ms", 0)
-
-        matched_cached = []
-        low_clean = clean.lower()
-        for r in WEBSITE_CACHED_RANGES:
-            sids = r.get("supported_sender_ids", "").lower()
-            rname = r.get("range_name", "").lower()
-            cname = r.get("country_name", "").lower()
-            if low_clean in sids or low_clean in rname or low_clean in cname or low_clean in ("all", "*"):
-                matched_cached.append(r)
 
         text = (
             f"📋 <b>Access-List Live Query:</b> <code>{html.escape(clean)}</code>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ <b>Panel Server Status:</b> <code>HTTP {code}</code> ({latency}ms)\n"
-            f"💬 <b>Server Message:</b> <i>{html.escape(msg)}</i>\n"
-            f"🌐 <b>Queried URL:</b> <code>{html.escape(client.base_url)}/api/v1/access-list</code>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"⚠️ <b>Thirdwave Server Status:</b> <code>HTTP {code}</code> ({latency}ms)\n"
+            f"🌐 <b>Queried Endpoint:</b>\n"
+            f"<code>{html.escape(client.base_url)}/api/v1/access-list?senderId={html.escape(clean)}</code>\n\n"
+            f"💬 <b>Exact Server Response:</b>\n"
+            f"<code>{html.escape(raw_err or msg)}</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "ℹ️ <b>Live Status Notice:</b>\n"
+            "The Thirdwave API server reports that this endpoint is currently <b>temporarily disabled</b> on their backend.\n\n"
+            "• Zero fake/example ranges are displayed.\n"
+            "• As soon as Thirdwave re-enables this endpoint, tapping <b>Retry Live API</b> will fetch real-time ranges."
         )
-
-        if matched_cached:
-            text += f"📦 <b>Website Known Ranges Supporting \"{html.escape(clean)}\":</b>\n\n"
-            for idx, r in enumerate(matched_cached[:8], 1):
-                flag, _ = get_country_display(r["country_code"], r["dial_code"], r["range_name"])
-                text += (
-                    f"<b>{idx}. {flag} {r['range_name']}</b> (ID: <code>{r['range_id']}</code>)\n"
-                    f"   └ <b>Country:</b> {r['country_name']} (+{r['dial_code']})\n"
-                    f"   └ <b>Rate:</b> <code>${r['rate']}</code> / SMS\n"
-                    f"   └ <b>Supported:</b> <code>{r['supported_sender_ids'][:55]}</code>\n\n"
-                )
-        else:
-            text += f"No cached reference ranges matched \"{html.escape(clean)}\".\n"
 
         kbd = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"🔄 Retry Live API: \"{clean}\"", callback_data=f"search_kw:{clean}")],
             [
                 InlineKeyboardButton("🔍 Search Another ID", callback_data="menu:access"),
-                InlineKeyboardButton("⚙️ Change Base URL (/seturl)", callback_data="menu:settings"),
+                InlineKeyboardButton("👤 My Account (/me)", callback_data="menu:me"),
             ],
-            [InlineKeyboardButton("🔙 Main Menu", callback_data="menu:home")]
+            [
+                InlineKeyboardButton("⚙️ Change Base URL (/seturl)", callback_data="menu:settings"),
+                InlineKeyboardButton("🔙 Main Menu", callback_data="menu:home"),
+            ]
         ])
 
     if status_msg:
@@ -801,22 +720,24 @@ async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         code = res.get("status_code", 0)
         msg  = res.get("message", "API Error")
+        raw_err = res.get("raw_error", "")
         latency = res.get("latency_ms", 0)
         masked_k = f"{client.api_key[:8]}...{client.api_key[-4:]}" if len(client.api_key) > 12 else client.api_key
 
         text = (
-            "👤 <b>Thirdwave Panel — Account Details (/me)</b>\n"
+            "👤 <b>Thirdwave Panel — Live Account Details (/me)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ <b>Live Query Status:</b> <code>HTTP {code}</code> ({latency}ms)\n"
-            f"💬 <b>Server Response:</b> <i>{html.escape(msg)}</i>\n"
-            f"🌐 <b>Queried Endpoint:</b> <code>{html.escape(client.base_url)}/api/v1/me</code>\n"
-            f"🔑 <b>API Key:</b> <code>{html.escape(masked_k)}</code>\n"
+            f"⚠️ <b>Thirdwave Server Status:</b> <code>HTTP {code}</code> ({latency}ms)\n"
+            f"🌐 <b>Queried Endpoint:</b>\n"
+            f"<code>{html.escape(client.base_url)}/api/v1/me</code>\n\n"
+            f"💬 <b>Exact Server Response:</b>\n"
+            f"<code>{html.escape(raw_err or msg)}</code>\n"
+            f"🔑 <b>API Key Used:</b> <code>{html.escape(masked_k)}</code>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "<b>Default Account Allocation Profile:</b>\n"
-            "• <b>Account Status:</b> <code>Active</code>\n"
-            "• <b>Daily Allocation Quota:</b> <code>5,000 Numbers/Day</code>\n"
-            "• <b>API Rate Limit:</b> <code>25 Requests / Minute</code>\n\n"
-            "<i>Tap Refresh below to re-query the live API:</i>"
+            "ℹ️ <b>Live Status Notice:</b>\n"
+            "The Thirdwave API server reports that the <code>/me</code> endpoint is currently <b>temporarily disabled</b> on their backend.\n\n"
+            "• Zero fake/dummy account data is displayed.\n"
+            "• As soon as Thirdwave re-enables this endpoint, tapping <b>Refresh Account (/me)</b> will fetch real account data."
         )
 
     kbd = InlineKeyboardMarkup([
